@@ -28,6 +28,7 @@ from skills.money_transfer.activities import (
 from skills.money_transfer.client import (
     TEMPORAL_ADDRESS,
     TEMPORAL_NAMESPACE,
+    USE_NEXUS,
 )
 from skills.money_transfer.shared import TASK_QUEUE
 from skills.money_transfer.workflow import MoneyTransferWorkflow
@@ -42,12 +43,26 @@ async def main() -> None:
         data_converter=pydantic_data_converter,
     )
 
+    # The Nexus path adds a caller workflow and the operation handler. When the
+    # flag is off, the worker is identical to the direct-path setup.
+    workflows = [MoneyTransferWorkflow]
+    nexus_service_handlers: list = []
+    if USE_NEXUS:
+        from skills.money_transfer.nexus_impl import (
+            MoneyTransferServiceHandler,
+            StartTransferWorkflow,
+        )
+
+        workflows.append(StartTransferWorkflow)
+        nexus_service_handlers.append(MoneyTransferServiceHandler())
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as activity_executor:
         worker = Worker(
             client,
             task_queue=TASK_QUEUE,
-            workflows=[MoneyTransferWorkflow],
+            workflows=workflows,
             activities=[build_transfer_plan, withdraw, deposit, refund],
+            nexus_service_handlers=nexus_service_handlers,
             activity_executor=activity_executor,
             # Pydantic's core is a compiled (Rust) extension. The workflow sandbox
             # cannot re-import binary modules, so it warns when pydantic_core is
@@ -60,7 +75,11 @@ async def main() -> None:
                 )
             ),
         )
-        print(f"Worker started on task queue '{TASK_QUEUE}'. Ctrl-C to stop.")
+        mode = "direct + Nexus" if USE_NEXUS else "direct"
+        print(
+            f"Worker started on task queue '{TASK_QUEUE}' ({mode} path). "
+            "Ctrl-C to stop."
+        )
         await worker.run()
 
 

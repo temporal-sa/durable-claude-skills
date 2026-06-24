@@ -32,6 +32,12 @@ from skills.money_transfer.workflow import MoneyTransferWorkflow
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "localhost:7233")
 TEMPORAL_NAMESPACE = os.environ.get("TEMPORAL_NAMESPACE", "default")
 
+# Optional: when set, `initiate_transfer` reaches MoneyTransferWorkflow through a
+# Nexus operation (via a thin caller workflow) instead of starting it directly.
+# Either way the backing workflow id is the same, so approval and queries below
+# are unchanged. Default is the direct path.
+USE_NEXUS = os.environ.get("USE_NEXUS", "false").strip().lower() in {"1", "true", "yes"}
+
 # Statuses at which initiation is done handing control back to the human/agent.
 _SETTLED_AFTER_START = {
     "awaiting_approval",
@@ -62,6 +68,15 @@ async def get_client() -> Client:
 
 def workflow_id_for(reference_id: str) -> str:
     return f"transfer-{reference_id}"
+
+
+def nexus_workflow_id_for(reference_id: str) -> str:
+    """Id of the Nexus *caller* workflow (distinct from the backing transfer).
+
+    Only used on the ``USE_NEXUS`` path. The caller's sole job is to invoke the
+    Nexus operation, which starts the backing ``transfer-{reference_id}`` workflow.
+    """
+    return f"nexus-transfer-{reference_id}"
 
 
 # ---- Read-only helpers (no money moves) ------------------------------------
@@ -126,16 +141,36 @@ async def initiate_transfer(request: TransferRequest) -> dict:
     client = await get_client()
     workflow_id = workflow_id_for(request.reference_id)
 
-    try:
-        handle = await client.start_workflow(
-            MoneyTransferWorkflow.run,
-            request,
-            id=workflow_id,
-            task_queue=TASK_QUEUE,
-        )
-    except RPCError:
-        # Same reference started already; attach to the running execution.
+    if USE_NEXUS:
+        # Start the backing workflow through the Nexus operation. The caller
+        # workflow's handler starts MoneyTransferWorkflow at `workflow_id`, so we
+        # then attach to that backing workflow for the plan/approval/queries below
+        # exactly as the direct path does.
+        from skills.money_transfer.nexus_impl import StartTransferWorkflow
+
+        try:
+            await client.start_workflow(
+                StartTransferWorkflow.run,
+                request,
+                id=nexus_workflow_id_for(request.reference_id),
+                task_queue=TASK_QUEUE,
+            )
+        except RPCError:
+            # Same reference already in flight; the backing workflow exists (or
+            # soon will). Fall through and attach to it.
+            pass
         handle = client.get_workflow_handle(workflow_id)
+    else:
+        try:
+            handle = await client.start_workflow(
+                MoneyTransferWorkflow.run,
+                request,
+                id=workflow_id,
+                task_queue=TASK_QUEUE,
+            )
+        except RPCError:
+            # Same reference started already; attach to the running execution.
+            handle = client.get_workflow_handle(workflow_id)
 
     status = await _await_plan_ready(handle)
     plan = await handle.query(MoneyTransferWorkflow.get_plan)
@@ -193,12 +228,22 @@ async def get_state(reference_id: str) -> dict:
 async def _await_plan_ready(
     handle: WorkflowHandle, timeout_seconds: float = 10.0
 ) -> str:
-    """Poll status until the plan is built (awaiting approval) or it has settled."""
+    """Poll status until the plan is built (awaiting approval) or it has settled.
+
+    Tolerates the backing workflow not existing yet: on the Nexus path the caller
+    workflow is still starting it, so an early query can raise NOT_FOUND. We treat
+    that as "not ready" and keep polling until the deadline.
+    """
     deadline = asyncio.get_running_loop().time() + timeout_seconds
+    status = "validating"
     while True:
-        status = await handle.query(MoneyTransferWorkflow.get_status)
-        if status in _SETTLED_AFTER_START:
-            return status
+        try:
+            status = await handle.query(MoneyTransferWorkflow.get_status)
+        except RPCError:
+            status = "validating"
+        else:
+            if status in _SETTLED_AFTER_START:
+                return status
         if asyncio.get_running_loop().time() > deadline:
             return status
         await asyncio.sleep(0.15)

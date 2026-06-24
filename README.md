@@ -114,6 +114,7 @@ All variables are optional except `ANTHROPIC_API_KEY`. Copy `.env.example` to
 | `CLAUDE_MODEL`       | agent API    | `claude-sonnet-4-6`                           | The model the agent uses                |
 | `TEMPORAL_ADDRESS`   | worker + API | `localhost:7233`                              | Temporal frontend address               |
 | `TEMPORAL_NAMESPACE` | worker + API | `default`                                     | Temporal namespace                      |
+| `USE_NEXUS`          | worker + API | `false`                                       | Start the transfer through a Nexus operation instead of directly (see below) |
 | `BANK_DB_PATH`       | worker + API | `./banking.db`                                | SQLite file the worker and API share    |
 | `ALLOWED_ORIGINS`    | agent API    | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origins            |
 | `VITE_API_TARGET`    | web (dev)    | `http://localhost:8000`                       | Where Vite proxies `/api` in dev        |
@@ -126,6 +127,110 @@ The two `VITE_*` vars are build/dev-time Vite variables (read via
 `import.meta.env`), so set them in `web/.env` or the build environment, not via
 `uv run --env-file .env`. For local dev you don't need either: Vite proxies
 `/api` to the FastAPI server on the same origin.
+
+## Optional: run the skill through a Nexus operation
+
+By default the agent starts `MoneyTransferWorkflow` directly. Set `USE_NEXUS=true`
+to instead reach it through a **Temporal Nexus** operation. This is entirely
+optional and off by default; the direct path is unchanged.
+
+### Why — what Nexus adds
+
+Nexus adds a *third* contract to the skill without removing the others:
+
+- `SKILL.md` — the model-facing contract (still loaded into the prompt, unchanged).
+- `MoneyTransferService` (`skills/money_transfer/nexus_service.py`) — the typed
+  service-to-service contract, the new piece. A caller depends only on this, not
+  on the workflow or banking code, so the skill could live in another namespace,
+  repository, or team.
+- `MoneyTransferWorkflow` — the deterministic implementation (unchanged).
+
+Because Nexus operations are invoked from a workflow (not from arbitrary code),
+the agent's `initiate_transfer` starts a thin caller workflow
+(`StartTransferWorkflow`, in `skills/money_transfer/nexus_impl.py`) that runs the
+operation. The operation handler starts `MoneyTransferWorkflow` at the **same** id
+(`transfer-<reference_id>`), so the approval Update, status/plan queries, the UI,
+and the bank are all identical to the direct path — only the *start* mechanism
+changes.
+
+```
+  Direct (default):   initiate_transfer ─────────────────────────►  transfer-<ref>  (MoneyTransferWorkflow)
+  Nexus (USE_NEXUS):  initiate_transfer ─► nexus-transfer-<ref> ─► (Nexus endpoint) ─► transfer-<ref>
+                                            (caller workflow)        start_transfer op
+```
+
+### Setup (what's needed to demonstrate it)
+
+Nexus support ships with Temporal's local dev server, so no special build is
+needed — just three things beyond the normal run: create an endpoint once, flip
+the flag, and restart the worker and API so both pick it up.
+
+1. **Start the dev server** (if it isn't already running):
+
+   ```bash
+   temporal server start-dev
+   ```
+
+2. **Create the Nexus endpoint — once per server.** It routes
+   `MoneyTransferService` calls to the worker's task queue. Either run the helper
+   (idempotent — safe to re-run, prints "already exists" if so):
+
+   ```bash
+   uv run --env-file .env python scripts/setup_nexus.py
+   ```
+
+   or do the equivalent with the CLI:
+
+   ```bash
+   temporal operator nexus endpoint create \
+     --name money-transfer-endpoint \
+     --target-namespace default \
+     --target-task-queue money-transfer
+   ```
+
+3. **Turn on the flag.** In `.env`, set:
+
+   ```bash
+   USE_NEXUS=true
+   ```
+
+4. **Restart the worker and the API** so both read the flag. They must agree:
+   the flag gates both the agent's start path *and* the worker's registration of
+   the caller workflow and operation handler.
+
+   ```bash
+   # worker
+   uv run --env-file .env python worker.py
+   # api
+   uv run --env-file .env uvicorn agent.server:app --reload
+   ```
+
+### Verify it's using Nexus
+
+- The worker prints its mode on startup: look for
+  `Worker started on task queue 'money-transfer' (direct + Nexus path).` If it
+  says `(direct)`, the worker didn't see `USE_NEXUS=true` — re-check `.env` and
+  that you passed `--env-file .env` to the worker.
+- Run a transfer in the UI, then open the Web UI (http://localhost:8233). With
+  Nexus on you'll see **two** workflows per transfer: the `nexus-transfer-<ref>`
+  caller and the `transfer-<ref>` execution it started through the operation.
+  With the flag off there's only `transfer-<ref>`.
+
+### Notes and gotchas
+
+- **The worker and API must agree on `USE_NEXUS`.** If the API has it on but the
+  worker has it off, you'll get
+  `Workflow class StartTransferWorkflow is not registered on this worker` —
+  restart the worker with the flag set.
+- **Order matters on first run:** the endpoint (step 2) must exist before a
+  Nexus-path transfer runs, or the caller workflow can't resolve
+  `money-transfer-endpoint`.
+- **Turning it back off:** set `USE_NEXUS=false` (or remove the line) and restart
+  the worker and API. The endpoint can stay; it's harmless when unused.
+- **Demo simplification:** the handler, caller, and agent all use the `default`
+  namespace and the `money-transfer` task queue, so the agent can still query and
+  update the backing workflow directly. A true cross-namespace/cross-team split
+  is the natural next step Nexus enables.
 
 ## What to try
 
@@ -176,13 +281,15 @@ skills/money_transfer/
   activities.py     plan / withdraw / deposit / refund
   workflow.py       MoneyTransferWorkflow (plan → approval gate → saga)
   client.py         the bridge the agent uses to drive Temporal
+  nexus_service.py  optional Nexus service contract (USE_NEXUS)
+  nexus_impl.py     optional Nexus handler + caller workflow (USE_NEXUS)
   tests/            workflow tests
 agent/
   skills.py         loads SKILL.md, defines the tools, dispatches them
   agent.py          the Claude tool-use loop
   server.py         FastAPI: /api/chat, /api/transfer/decision, /api/accounts, /api/transactions
 worker.py           the Temporal worker
-scripts/            seed_bank.py (reset balances), smoke_test.py (bank invariants)
+scripts/            seed_bank.py (reset balances), smoke_test.py (bank invariants), setup_nexus.py (create the Nexus endpoint)
 web/                React + TypeScript chat UI, styled to the Temporal brand
 ```
 

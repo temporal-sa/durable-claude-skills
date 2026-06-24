@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { decide, fetchAccounts, fetchTransactions, sendMessage } from "./api";
 import type { Account, ChatItem, Transaction } from "./types";
+import { getSessionId } from "./session";
 import { TemporalLogo, TemporalMark } from "./components/TemporalLogo";
 import { TransferPlanCard } from "./components/TransferPlanCard";
 
@@ -33,7 +34,9 @@ function signedMoney(t: Transaction): string {
 
 export default function App() {
   const [items, setItems] = useState<ChatItem[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  // Persisted per-browser id, so a refresh keeps the same conversation and
+  // different browsers get separate sessions.
+  const [sessionId, setSessionId] = useState<string>(() => getSessionId());
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
