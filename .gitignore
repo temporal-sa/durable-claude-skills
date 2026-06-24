@@ -61,6 +61,11 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Simulated bank (created at runtime by the worker/API; BANK_DB_PATH default)
+banking.db
+banking.db-wal
+banking.db-shm
+
 # Flask stuff:
 instance/
 .webassets-cache
@@ -216,3 +221,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / TypeScript / Vite (web/)
+node_modules/
+dist-ssr/
+*.tsbuildinfo
+.vite/
+.eslintcache
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.npm/
