@@ -107,7 +107,7 @@ body {
 
 /* ------------------------------------------------------------------ Rail */
 .rail {
-  width: 286px;
+  width: 320px;
   flex: 0 0 auto;
   border-right: 1px solid var(--line);
   background: var(--surface);
@@ -173,6 +173,9 @@ body {
   border-top: 1px solid var(--line-2);
 }
 .rail__note p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--ink-2); }
+.rail__note-link { margin-top: 10px !important; }
+.rail__note-link a { color: var(--uv); text-decoration: none; font-weight: 500; }
+.rail__note-link a:hover { text-decoration: underline; }
 
 /* ------------------------------------------------------------------ Chat */
 .chat { display: flex; flex-direction: column; flex: 1; min-width: 0; }

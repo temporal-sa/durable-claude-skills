@@ -3,6 +3,10 @@ import { TemporalMark } from "./TemporalLogo";
 
 const TEMPORAL_UI =
   import.meta.env.VITE_TEMPORAL_UI ?? "http://localhost:8233";
+// On Temporal Cloud the namespace is `<namespace>.<accountId>`; locally it's
+// `default`. Build-time var, baked into the bundle (see web/.env.example).
+const TEMPORAL_NAMESPACE =
+  import.meta.env.VITE_TEMPORAL_NAMESPACE ?? "default";
 
 function money(n: number): string {
   return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
@@ -23,7 +27,7 @@ const STATUS_LABEL: Record<string, string> = {
 export function TransferPlanCard({ item, onDecide }: Props) {
   const { event, state, result } = item;
   const plan = event.plan;
-  const workflowUrl = `${TEMPORAL_UI}/namespaces/default/workflows/${event.workflow_id}`;
+  const workflowUrl = `${TEMPORAL_UI}/namespaces/${TEMPORAL_NAMESPACE}/workflows/${event.workflow_id}`;
   const settledStatus = result?.status ?? "";
   const isComplete = settledStatus === "completed";
   const isFailed = settledStatus === "failed" || settledStatus === "expired";

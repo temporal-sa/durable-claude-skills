@@ -119,14 +119,27 @@ All variables are optional except `ANTHROPIC_API_KEY`. Copy `.env.example` to
 | `ALLOWED_ORIGINS`    | agent API    | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origins            |
 | `VITE_API_TARGET`    | web (dev)    | `http://localhost:8000`                       | Where Vite proxies `/api` in dev        |
 | `VITE_API_BASE`      | web (build)  | `""` (same-origin)                            | API origin the browser calls; set when serving the UI against a remote API |
+| `VITE_TEMPORAL_UI`   | web (build)  | `http://localhost:8233`                       | Base URL of the Temporal Web UI the workflow links point to; set to `https://cloud.temporal.io` for Temporal Cloud |
+| `VITE_TEMPORAL_NAMESPACE` | web (build) | `default`                                  | Namespace segment in the workflow link; on Temporal Cloud it's `<namespace>.<accountId>` |
 
 The worker and API must agree on `BANK_DB_PATH` (it's how they share balances),
 so if you change it, set it for both; `--env-file .env` does that for you.
 
-The two `VITE_*` vars are build/dev-time Vite variables (read via
-`import.meta.env`), so set them in `web/.env` or the build environment, not via
-`uv run --env-file .env`. For local dev you don't need either: Vite proxies
-`/api` to the FastAPI server on the same origin.
+The `VITE_*` vars are build/dev-time Vite variables (read via `import.meta.env`),
+so set them in `web/.env` (see `web/.env.example`) or the build environment, not
+via `uv run --env-file .env` — and **rebuild** (`npm run build`, or restart
+`npm run dev`) for changes to take effect, since they're baked into the bundle.
+For local dev you don't need any of them: the defaults match
+`temporal server start-dev`.
+
+To make the transfer card's workflow link open in **Temporal Cloud** instead of
+localhost, set both in `web/.env` and rebuild:
+
+```bash
+# web/.env
+VITE_TEMPORAL_UI=https://cloud.temporal.io
+VITE_TEMPORAL_NAMESPACE=your-namespace.AccountId
+```
 
 ## Optional: run the skill through a Nexus operation
 

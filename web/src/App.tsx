@@ -203,7 +203,7 @@ export default function App() {
             </p>
           ) : (
             <ul className="txn-list">
-              {transactions.map((t) => (
+              {transactions.slice(0, 10).map((t) => (
                 <li key={t.txn_id} className="txn">
                   <div className="txn__top">
                     <span className="txn__label">{TXN_LABEL[t.kind]}</span>
@@ -222,8 +222,20 @@ export default function App() {
 
           <div className="rail__note">
             <p>
-              The assistant talks; a Temporal workflow moves the money. Transfers
-              pause for your approval and roll back on failure.
+              A bank assistant for moving money between accounts. It reads
+              balances and prices transfers but never moves money itself. Sending
+              starts a durable Temporal workflow (a Claude skill) that pauses for
+              your approval and refunds automatically if any step fails.
+            </p>
+            <p className="rail__note-link">
+              <a
+                href="https://github.com/temporal-sa/durable-claude-skills"
+                target="_blank"
+                rel="noreferrer"
+              >
+                View the code on GitHub
+                <span aria-hidden="true"> ↗</span>
+              </a>
             </p>
           </div>
         </aside>
