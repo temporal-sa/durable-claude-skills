@@ -6,6 +6,7 @@ import type {
   ChatResponse,
   DecisionResponse,
   Transaction,
+  TransferState,
 } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -40,6 +41,18 @@ export function decide(
     reference_id: referenceId,
     approved,
   });
+}
+
+// Look up a transfer's current state so the UI can reconnect its approval card
+// after a page reload. Returns null if the workflow is unknown (e.g. expired and
+// aged out of retention).
+export async function fetchTransferState(
+  referenceId: string
+): Promise<TransferState | null> {
+  const res = await fetch(`${BASE}/api/transfer/${encodeURIComponent(referenceId)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Could not load transfer (${res.status})`);
+  return res.json() as Promise<TransferState>;
 }
 
 export async function fetchAccounts(): Promise<Account[]> {

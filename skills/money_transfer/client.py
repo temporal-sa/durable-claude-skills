@@ -173,8 +173,26 @@ async def initiate_transfer(request: TransferRequest) -> dict:
             handle = client.get_workflow_handle(workflow_id)
 
     status = await _await_plan_ready(handle)
-    plan = await handle.query(MoneyTransferWorkflow.get_plan)
-    result = await handle.query(MoneyTransferWorkflow.get_result)
+    try:
+        plan = await handle.query(MoneyTransferWorkflow.get_plan)
+        result = await handle.query(MoneyTransferWorkflow.get_result)
+    except RPCError:
+        # The backing workflow is not available. On the Nexus path this almost
+        # always means the operation never created it — usually because the Nexus
+        # endpoint is not registered on the server (re-run scripts/setup_nexus.py)
+        # or the worker is not running with USE_NEXUS=true. Fail gracefully with a
+        # clear status instead of 500-ing, so the agent can tell the customer the
+        # transfer did not start rather than the request crashing.
+        return {
+            "workflow_id": workflow_id,
+            "status": "error",
+            "plan": None,
+            "result": None,
+            "detail": (
+                "The transfer could not be started — the durable workflow did not "
+                "come up. Please try again in a moment."
+            ),
+        }
     return {
         "workflow_id": workflow_id,
         "status": status,

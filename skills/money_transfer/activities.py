@@ -12,6 +12,7 @@ execute against the bank, deterministically and idempotently.
 from __future__ import annotations
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from banking import service as bank
 from skills.money_transfer.shared import (
@@ -19,6 +20,11 @@ from skills.money_transfer.shared import (
     TransferPlan,
     TransferRequest,
 )
+
+#: Demo: the deposit activity fails until this attempt number, so Temporal's
+#: automatic retries (paced 5s apart by the workflow's deposit retry policy) are
+#: visible in the UI before the deposit finally succeeds. Set to 1 to disable.
+DEPOSIT_SUCCEED_ON_ATTEMPT = 3
 
 
 @activity.defn
@@ -70,7 +76,34 @@ def withdraw(input: LedgerInput) -> str:
 
 @activity.defn
 def deposit(input: LedgerInput) -> str:
-    """Credit the destination account. Raises a non-retryable error if it cannot."""
+    """Credit the destination account.
+
+    A closed (or otherwise non-active) destination fails here — after the source
+    has already been debited — so the workflow's saga rolls the withdrawal back.
+    """
+    account = bank.get_account(input.account_id)
+
+    # Demo: simulate a flaky-but-recoverable destination by failing the first
+    # attempts, but only for an account that *can* eventually succeed. A closed
+    # account never can, so skip the simulation and let bank.deposit fail hard
+    # (non-retryable, below), which triggers the saga refund. The raised error is
+    # retryable (its type is not in the workflow's non-retryable list), so
+    # Temporal retries it until DEPOSIT_SUCCEED_ON_ATTEMPT. We fail before
+    # touching the bank, so no money moves on the failed attempts.
+    if account is not None and account.status == "active":
+        attempt = activity.info().attempt
+        if attempt < DEPOSIT_SUCCEED_ON_ATTEMPT:
+            activity.logger.warning(
+                "Simulated deposit failure on attempt %d of %d",
+                attempt,
+                DEPOSIT_SUCCEED_ON_ATTEMPT,
+            )
+            raise ApplicationError(
+                f"Simulated deposit failure (attempt {attempt} of "
+                f"{DEPOSIT_SUCCEED_ON_ATTEMPT})",
+                type="SimulatedDepositFailure",
+            )
+
     txn_id = bank.deposit(
         account_id=input.account_id,
         amount_cents=input.amount_cents,

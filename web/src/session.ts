@@ -29,3 +29,31 @@ export function getSessionId(): string {
   }
   return id;
 }
+
+// Reference id of a transfer awaiting approval, remembered across reloads so the
+// UI can reconnect to the still-running workflow and re-render its card.
+const PENDING_KEY = "pending_transfer_ref";
+
+export function getPendingRef(): string | null {
+  try {
+    return localStorage.getItem(PENDING_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setPendingRef(ref: string): void {
+  try {
+    localStorage.setItem(PENDING_KEY, ref);
+  } catch {
+    /* storage unavailable; reconnection just won't survive a reload */
+  }
+}
+
+export function clearPendingRef(): void {
+  try {
+    localStorage.removeItem(PENDING_KEY);
+  } catch {
+    /* nothing to do */
+  }
+}

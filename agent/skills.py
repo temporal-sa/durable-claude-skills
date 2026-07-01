@@ -191,6 +191,8 @@ async def dispatch_tool(
             "status": started["status"],
             "plan": plan,
         }
+        if started.get("detail"):
+            result_for_model["detail"] = started["detail"]
 
         ui_event = None
         if started["status"] == "awaiting_approval":

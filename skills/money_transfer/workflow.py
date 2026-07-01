@@ -23,7 +23,7 @@ from typing import Awaitable, Callable
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError, is_cancelled_exception
+from temporalio.exceptions import ActivityError, ApplicationError, is_cancelled_exception
 
 with workflow.unsafe.imports_passed_through():
     from skills.money_transfer.activities import (
@@ -43,19 +43,51 @@ with workflow.unsafe.imports_passed_through():
 
 # Bank validation failures are deterministic facts about the request: retrying
 # will not change the outcome, so fail fast and let the workflow handle it.
+_NON_RETRYABLE_BANK_ERRORS = [
+    "InvalidAccountError",
+    "InsufficientFundsError",
+    "AccountFrozenError",
+    "AccountClosedError",
+    "TransferLimitError",
+]
+
 _BANK_RETRY_POLICY = RetryPolicy(
-    non_retryable_error_types=[
-        "InvalidAccountError",
-        "InsufficientFundsError",
-        "AccountFrozenError",
-        "TransferLimitError",
-    ],
+    non_retryable_error_types=_NON_RETRYABLE_BANK_ERRORS,
+)
+
+# The deposit retries on a constant 5-second interval (rather than the default
+# exponential backoff) so the demo's simulated deposit failures retry visibly —
+# a 5-second wait between each attempt — before the deposit finally succeeds.
+_DEPOSIT_RETRY_POLICY = RetryPolicy(
+    initial_interval=timedelta(seconds=5),
+    backoff_coefficient=1.0,
+    maximum_interval=timedelta(seconds=5),
+    non_retryable_error_types=_NON_RETRYABLE_BANK_ERRORS,
 )
 
 #: How long to hold a transfer waiting for a human decision before expiring it.
 APPROVAL_TIMEOUT = timedelta(minutes=10)
 
 _LEDGER_TIMEOUT = timedelta(seconds=10)
+
+
+def _failure_detail(err: ActivityError) -> str:
+    """Plain-language explanation for a failed (compensated) transfer.
+
+    Special-cases a closed destination so the customer learns *why* the deposit
+    failed and that their money was returned; otherwise a generic refund message.
+    """
+    cause = err.cause
+    if isinstance(cause, ApplicationError) and cause.type == "AccountClosedError":
+        return (
+            "We couldn't deposit the funds because the destination account is "
+            "closed. The withdrawal was rolled back, so your balance has been "
+            "fully refunded."
+        )
+    return (
+        "The transfer could not be completed and any debit was returned to the "
+        "source account."
+    )
 
 
 @workflow.defn
@@ -199,7 +231,7 @@ class MoneyTransferWorkflow:
                     idempotency_key=f"deposit:{request.reference_id}",
                 ),
                 start_to_close_timeout=_LEDGER_TIMEOUT,
-                retry_policy=_BANK_RETRY_POLICY,
+                retry_policy=_DEPOSIT_RETRY_POLICY,
             )
 
             self._status = "completed"
@@ -238,9 +270,6 @@ class MoneyTransferWorkflow:
                 reference_id=request.reference_id,
                 plan=plan,
                 refund_txn_id=refund_txn,
-                detail=(
-                    "The transfer could not be completed and any debit was "
-                    "returned to the source account."
-                ),
+                detail=_failure_detail(err),
             )
             return self._result

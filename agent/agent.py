@@ -23,6 +23,11 @@ from agent.skills import (
     build_system_prompt,
     dispatch_tool,
 )
+from skills.money_transfer import client as transfer
+
+# A transfer is settled (no longer awaiting approval) once it reaches any of
+# these statuses; the agent is then free to start a new one.
+_TERMINAL_STATUSES = {"completed", "declined", "expired", "failed", "invalid"}
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = 1024
@@ -56,16 +61,62 @@ def _text_of(content_blocks: list[Any]) -> str:
     return "\n".join(parts).strip()
 
 
+_NO_PENDING_NOTE = (
+    "CURRENT TRANSFER STATE: No transfer is awaiting approval. If the customer "
+    "wants to transfer, start one with initiate_transfer."
+)
+
+
+async def _transfer_state_note(session: Session) -> str:
+    """Authoritative, per-turn note on whether a transfer is awaiting approval.
+
+    The approval/decline happens out of band (relayed straight into the workflow
+    by the API), so the conversation transcript can look like a transfer is still
+    pending after it has actually settled. This checks the *workflow's* real
+    status and tells the model the truth, clearing stale session state so it does
+    not refuse a new transfer because of a transfer that already resolved.
+    """
+    ref = session.pending_reference_id
+    if not ref:
+        return _NO_PENDING_NOTE
+
+    try:
+        state = await transfer.get_state(ref)
+        status = state.get("status")
+    except Exception:  # noqa: BLE001 - workflow gone/unreachable: treat as settled
+        session.pending_reference_id = None
+        return _NO_PENDING_NOTE
+
+    if status == "awaiting_approval":
+        return (
+            f"CURRENT TRANSFER STATE: Transfer {ref} is awaiting the customer's "
+            f"approval on the confirmation card. Do NOT start another transfer "
+            f"until it is approved or declined."
+        )
+
+    # Any other status is terminal: the transfer is done, nothing is pending.
+    session.pending_reference_id = None
+    return (
+        f"CURRENT TRANSFER STATE: The most recent transfer ({ref}) has settled "
+        f"(status: {status}); nothing is awaiting approval. You may start a new "
+        f"transfer if the customer wants one."
+    )
+
+
 async def run_turn(session: Session, user_message: str) -> AgentTurn:
     """Run one user turn to completion, including any tool calls."""
     session.messages.append({"role": "user", "content": user_message})
     events: list[dict[str, Any]] = []
 
+    # Ground the model in the real, current transfer state so it doesn't refuse a
+    # new transfer because of one that already settled out of band.
+    system_prompt = f"{_system_prompt()}\n\n{await _transfer_state_note(session)}"
+
     for _ in range(MAX_TOOL_ITERATIONS):
         response = await _client().messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=_system_prompt(),
+            system=system_prompt,
             messages=session.messages,
             tools=TOOLS,
         )
@@ -119,6 +170,9 @@ def outcome_message(result: dict[str, Any]) -> str:
     if status == "declined":
         return "No problem — I've cancelled that transfer. Nothing was sent."
     if status == "failed":
+        detail = result.get("detail")
+        if detail:
+            return f"{detail} Want me to try again?"
         return (
             "That transfer couldn't be completed, and any amount debited has been "
             "returned to your account. Want me to try again?"

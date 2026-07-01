@@ -1,9 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { decide, fetchAccounts, fetchTransactions, sendMessage } from "./api";
-import type { Account, ChatItem, Transaction } from "./types";
-import { getSessionId } from "./session";
+import {
+  decide,
+  fetchAccounts,
+  fetchTransactions,
+  fetchTransferState,
+  sendMessage,
+} from "./api";
+import type { Account, ChatItem, Transaction, TransferPlanEvent } from "./types";
+import {
+  clearPendingRef,
+  getPendingRef,
+  getSessionId,
+  setPendingRef,
+} from "./session";
 import { TemporalLogo, TemporalMark } from "./components/TemporalLogo";
 import { TransferPlanCard } from "./components/TransferPlanCard";
 
@@ -44,6 +55,9 @@ export default function App() {
   const [offline, setOffline] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Guards the one-shot reconnect effect so React 18 StrictMode's double-invoke
+  // (dev only) doesn't fetch and render the pending card twice.
+  const reconnectedRef = useRef(false);
 
   // Pull the latest balances and ledger; called on load and after a transfer settles.
   function refreshBank() {
@@ -60,6 +74,56 @@ export default function App() {
 
   useEffect(() => {
     refreshBank();
+  }, []);
+
+  // Reconnect to a transfer left awaiting approval before a reload. The card
+  // lives only in browser memory, but the workflow keeps running, so we re-fetch
+  // its state and re-render the card if it's still awaiting approval.
+  useEffect(() => {
+    if (reconnectedRef.current) return; // StrictMode invokes mount effects twice
+    reconnectedRef.current = true;
+
+    const ref = getPendingRef();
+    if (!ref) return;
+    fetchTransferState(ref)
+      .then((state) => {
+        if (state && state.status === "awaiting_approval" && state.plan) {
+          const event: TransferPlanEvent = {
+            type: "transfer_plan",
+            workflow_id: state.workflow_id,
+            reference_id: state.reference_id,
+            status: "awaiting_approval",
+            plan: state.plan,
+          };
+          setItems((prev) => {
+            // Idempotent: don't add a second card for a transfer already shown.
+            if (
+              prev.some(
+                (it) =>
+                  it.kind === "transfer" &&
+                  it.event.reference_id === event.reference_id
+              )
+            ) {
+              return prev;
+            }
+            return [
+              ...prev,
+              {
+                kind: "message",
+                id: newId(),
+                role: "assistant",
+                text: "Welcome back — you have a transfer still waiting for your approval.",
+              },
+              { kind: "transfer", id: newId(), event, state: "awaiting_approval" },
+            ];
+          });
+        } else {
+          clearPendingRef(); // already settled (or gone); nothing to reconnect
+        }
+      })
+      .catch(() => {
+        /* transient/offline: leave the stored ref so a later reload can retry */
+      });
   }, []);
 
   useEffect(() => {
@@ -92,6 +156,8 @@ export default function App() {
             event,
             state: "awaiting_approval",
           });
+          // Remember it so a page reload can reconnect to this workflow's card.
+          setPendingRef(event.reference_id);
         }
       }
       setItems((prev) => [...prev, ...additions]);
@@ -122,6 +188,7 @@ export default function App() {
     );
     try {
       const res = await decide(sessionId, referenceId, approved);
+      clearPendingRef(); // settled — no card to reconnect on the next reload
       setItems((prev) => {
         const updated = prev.map((it) =>
           it.kind === "transfer" && it.event.reference_id === referenceId

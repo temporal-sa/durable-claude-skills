@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent import agent
-from agent.skills import Session
+from agent.skills import Session, _plan_to_dollars
 from banking import service as bank
 from skills.money_transfer import client as transfer
 
@@ -90,7 +90,7 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/accounts")
 async def accounts() -> dict[str, list[dict[str, Any]]]:
-    ids = ["85-150", "43-812", "22-019", "55-200"]
+    ids = ["85-150", "43-812", "22-019", "55-200", "66-300"]
     out = []
     for account_id in ids:
         info = transfer.lookup_account(account_id)
@@ -112,11 +112,33 @@ async def chat(body: ChatIn) -> ChatOut:
     return ChatOut(session_id=session_id, text=turn.text, events=turn.events)
 
 
+@app.get("/api/transfer/{reference_id}")
+async def transfer_state(reference_id: str) -> dict[str, Any]:
+    """Current state of a transfer so the UI can reconnect after a refresh.
+
+    The confirmation card lives in the browser's memory, so a page reload loses
+    it even though the workflow is still running and awaiting approval. The UI
+    calls this on load with the reference it remembered (localStorage); if the
+    workflow is still ``awaiting_approval`` it re-renders the card so the customer
+    can approve or decline the transfer that is genuinely still in flight.
+    """
+    try:
+        state = await transfer.get_state(reference_id)
+    except Exception:  # noqa: BLE001 - workflow not found / unreachable
+        raise HTTPException(status_code=404, detail="No such transfer.")
+    return {
+        "workflow_id": state["workflow_id"],
+        "reference_id": reference_id,
+        "status": state["status"],
+        "plan": _plan_to_dollars(state.get("plan")),
+    }
+
+
 @app.post("/api/transfer/decision", response_model=DecisionOut)
 async def decide(body: DecisionIn) -> DecisionOut:
-    session = SESSIONS.get(body.session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Unknown session.")
+    # Get-or-create the session so a decision still lands on the workflow even if
+    # the API restarted (losing in-memory sessions) while the card was open.
+    _, session = _session(body.session_id)
 
     outcome = await transfer.submit_decision(body.reference_id, body.approved)
     result = outcome["result"]

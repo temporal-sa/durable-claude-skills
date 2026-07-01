@@ -48,6 +48,10 @@ class AccountFrozenError(BankError):
     """The account cannot send or receive funds right now."""
 
 
+class AccountClosedError(BankError):
+    """The account is permanently closed; it can neither send nor receive funds."""
+
+
 class TransferLimitError(BankError):
     """The transfer is above the per-transaction limit."""
 
@@ -62,7 +66,7 @@ class Account:
     name: str
     kind: str  # "checking" | "savings"
     balance_cents: int
-    status: str  # "active" | "frozen"
+    status: str  # "active" | "frozen" | "closed"
 
 
 @dataclass(frozen=True)
@@ -136,13 +140,16 @@ def init_db() -> None:
 #   85-150  healthy checking         -> happy path
 #   43-812  healthy savings          -> happy path target
 #   22-019  nearly empty checking    -> insufficient funds
-#   55-200  frozen account           -> deposit fails -> saga refund
+#   55-200  frozen account           -> rejected up front by validation
+#   66-300  closed checking ($0)     -> passes validation, deposit fails at
+#                                        execution -> saga refunds the withdrawal
 #   (99-999 intentionally absent)    -> invalid account
 _SEED = [
     ("85-150", "Ada's Checking", "checking", 5_000_00, "active"),
     ("43-812", "Ada's Savings", "savings", 1_200_00, "active"),
     ("22-019", "Side Hustle Checking", "checking", 250_00, "active"),
     ("55-200", "Frozen Escrow", "checking", 9_000_00, "frozen"),
+    ("66-300", "Closed Checking", "checking", 0, "closed"),
 ]
 
 
@@ -277,8 +284,13 @@ def validate_transfer(
     target = get_account(target_account)
     if target is None:
         problems.append(f"Destination account {target_account} was not found.")
-    elif target.status != "active":
-        problems.append(f"Destination account {target_account} is {target.status}.")
+    elif target.status == "frozen":
+        problems.append(f"Destination account {target_account} is frozen.")
+    # A "closed" destination is intentionally NOT rejected here. It passes
+    # planning so the transfer starts and the source is debited; the deposit then
+    # fails at execution and the workflow's saga refunds the withdrawal. That is
+    # the live demonstration of compensation (validation can be optimistic; the
+    # core bank has the final say at execution time).
 
     return problems
 
@@ -339,6 +351,8 @@ def withdraw(
         ).fetchone()
         if account is None:
             raise InvalidAccountError(f"No account found with id {account_id!r}")
+        if account["status"] == "closed":
+            raise AccountClosedError(f"Account {account_id} is closed")
         if account["status"] != "active":
             raise AccountFrozenError(f"Account {account_id} is {account['status']}")
         if account["balance_cents"] < amount_cents:
@@ -376,6 +390,8 @@ def deposit(
         ).fetchone()
         if account is None:
             raise InvalidAccountError(f"No account found with id {account_id!r}")
+        if account["status"] == "closed":
+            raise AccountClosedError(f"Account {account_id} is closed")
         if account["status"] != "active":
             raise AccountFrozenError(f"Account {account_id} is {account['status']}")
 

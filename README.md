@@ -255,15 +255,48 @@ The seeded accounts are chosen so every path is reachable:
 | `43-812` | Savings, $1,200       | a normal destination                 |
 | `22-019` | Checking, $250        | insufficient funds                   |
 | `55-200` | Frozen, $9,000        | a frozen account (transfer rejected) |
+| `66-300` | Closed checking, $0   | passes validation, then the deposit fails and the saga refunds the withdrawal |
 | `99-999` | (does not exist)      | an unknown account                   |
 
 - **Happy path:** "Send $250 from 85-150 to 43-812", then approve.
-- **A fee:** "$1,500 from 85-150 to 43-812" (over $1,000, so a 0.5% fee applies).
-- **Rejected before approval:** a transfer to `99-999` or `55-200` comes back
-  invalid with a plain explanation; no approval is requested.
+- **A fee:** "$1,500 from 85-150 to 43-812" (over $1,000 adds a 0.5% fee).
+- **Rejected up front:** a transfer to `99-999` or `55-200` comes back invalid;
+  no approval is requested.
 - **Decline:** start a transfer and decline it; nothing moves.
-- **Compensation:** the saga's refund path is covered by the tests (freeze the
-  destination after planning, approve, watch the debit roll back).
+- **Retries and rollback:** see [Failure handling](#failure-handling) below.
+
+## Failure handling
+
+Two of Temporal's reliability features are wired into the demo so you can watch
+them in the Web UI.
+
+### Automatic retries
+
+The `deposit` activity is deliberately flaky: it fails its first two attempts and
+succeeds on the third (`DEPOSIT_SUCCEED_ON_ATTEMPT` in
+`skills/money_transfer/activities.py`), and the workflow retries it on a fixed
+5-second interval (`_DEPOSIT_RETRY_POLICY` in `workflow.py`). Run the happy path
+and open the run in the Web UI: the deposit shows two failed attempts, ~5s apart,
+before it succeeds — automatically, with no code in the workflow to orchestrate
+it. The activity's idempotency key keeps the effect exactly-once across retries.
+Set `DEPOSIT_SUCCEED_ON_ATTEMPT = 1` to turn the simulation off.
+
+### Rollback with a saga
+
+Some failures can't be fixed by retrying — the destination is closed. Sending to
+`66-300` (closed) demonstrates the compensation:
+
+1. "Send $100 from 85-150 to 66-300", then approve.
+2. The plan is valid, so the source (85-150) is debited.
+3. The deposit into `66-300` fails with a non-retryable `AccountClosedError`.
+4. The workflow's saga refunds the withdrawal, and the assistant reports that the
+   funds couldn't be deposited and were returned.
+
+Validation is optimistic about a closed destination on purpose, so the failure
+surfaces at execution — which is exactly what compensation is for. The workflow
+still completes normally (final status `failed`); only the deposit activity
+fails, and that triggers the rollback. The refund path is also covered by the
+tests.
 
 ## Tests
 

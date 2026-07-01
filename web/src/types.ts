@@ -27,6 +27,14 @@ export interface ChatResponse {
   events: AgentEvent[];
 }
 
+// Current state of a transfer, used to reconnect the approval card after a reload.
+export interface TransferState {
+  workflow_id: string;
+  reference_id: string;
+  status: string;
+  plan: TransferPlanView | null;
+}
+
 export interface TransferResult {
   status: string;
   reference_id: string;
