@@ -32,14 +32,6 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-# Same-origin API (nginx proxies /api here), so VITE_API_BASE stays empty. Set
-# the Temporal Web UI link target at build time when pointing at Temporal Cloud.
-ARG VITE_API_BASE=""
-ARG VITE_TEMPORAL_UI=http://localhost:8233
-ARG VITE_TEMPORAL_NAMESPACE=default
-ENV VITE_API_BASE=$VITE_API_BASE \
-    VITE_TEMPORAL_UI=$VITE_TEMPORAL_UI \
-    VITE_TEMPORAL_NAMESPACE=$VITE_TEMPORAL_NAMESPACE
 RUN npm run build
 
 # ---- Stage 2: Python app + nginx ------------------------------------------
